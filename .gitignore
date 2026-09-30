@@ -1,0 +1,11 @@
+# deps and build output
+node_modules/
+dist/
+coverage/
+*.tgz
+
+# secrets: never commit keys
+.env*
+
+# OS files
+.DS_Store
