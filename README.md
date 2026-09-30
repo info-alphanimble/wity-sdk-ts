@@ -5,13 +5,13 @@ TypeScript and JavaScript client for [Wity](https://wity.alphanimble.com), the t
 ## Install
 
 ```sh
-npm install wity
+npm install wity-sdk
 ```
 
 Needs Node.js 20 or newer. Works with both `import` and `require`:
 
 ```js
-const { WityClient, choice, noul, score } = require("wity");
+const { WityClient, choice, noul, score } = require("wity-sdk");
 ```
 
 The SDK has no runtime dependencies.
@@ -27,7 +27,7 @@ export WITY_API_KEY="wity_..."
 Then ask questions:
 
 ```ts
-import { WityClient, choice, noul, score } from "wity";
+import { WityClient, choice, noul, score } from "wity-sdk";
 
 const client = new WityClient();
 
@@ -136,7 +136,7 @@ origin.value?.city; // "Lisbon"
 Every error the SDK throws extends `WityError`:
 
 ```ts
-import { RateLimitError, WityError } from "wity";
+import { RateLimitError, WityError } from "wity-sdk";
 
 try {
   await client.systemOne({ state, questions });

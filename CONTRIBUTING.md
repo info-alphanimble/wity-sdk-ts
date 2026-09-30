@@ -24,5 +24,5 @@ Until users update, they can set `WITY_BASE_URL` to the new address.
 
 ## Publishing
 
-1. Remove `"private": true` from `package.json`. It's there so nobody publishes by accident.
+1. Bump the version in `package.json` and `package-lock.json`. The npm package name is `wity-sdk`.
 2. Run `npm publish`. `prepublishOnly` runs `npm run check` first, and the package goes out as public.

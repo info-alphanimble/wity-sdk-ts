@@ -1,5 +1,5 @@
 {
-  "name": "wity",
+  "name": "wity-sdk",
   "version": "0.1.0",
   "description": "TypeScript SDK for the Wity typed-decision API",
   "keywords": [
@@ -11,8 +11,11 @@
     "api"
   ],
   "homepage": "https://wity.alphanimble.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/info-alphanimble/wity-sdk-ts.git"
+  },
   "license": "Apache-2.0",
-  "private": true,
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
