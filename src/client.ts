@@ -22,7 +22,7 @@ import type {
  * If it ever moves: change this line, bump the version and publish.
  * Until users update, they can set WITY_BASE_URL or the `baseURL` option.
  */
-export const DEFAULT_BASE_URL = "https://wity-proxy-production-2c33.up.railway.app";
+export const DEFAULT_BASE_URL = "https://api.wity.alphanimble.com";
 
 /** Thinking can take a few seconds. Longer `max_latency_ms` values raise the timeout automatically. */
 export const DEFAULT_TIMEOUT_MS = 60_000;
