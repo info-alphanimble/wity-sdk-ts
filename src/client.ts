@@ -8,11 +8,18 @@ import {
 } from "./errors";
 import { DEFAULT_LOG_LEVEL, type LogLevel, type Logger, consoleLogger, parseLogLevel, withLevel } from "./logging";
 import { backoffMs, delayBeforeRetry, shouldRetryStatus, sleep } from "./retry";
+import { type Call, checkRequest, latencyTimeoutMs, type Requester } from "./request";
+import { Sessions } from "./sessions";
+import { Skills } from "./skills";
 import type {
+  ExtractRequest,
+  ExtractResponse,
   GenerateRequest,
   GenerateResponse,
   Questions,
   RequestOptions,
+  SplitRequest,
+  SplitResponse,
   SystemOneRequest,
   SystemOneResponse,
 } from "./types";
@@ -28,24 +35,36 @@ export const DEFAULT_BASE_URL = "https://api.wity.alphanimble.com";
 export const DEFAULT_TIMEOUT_MS = 60_000;
 export const DEFAULT_MAX_RETRIES = 2;
 
-/** Extra time on top of `max_latency_ms` for the network and Wity's own work. */
-const LATENCY_MARGIN_MS = 10_000;
-
 /** The longest delay `setTimeout` accepts. A longer one fires at once. */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/** Split and extract read long documents. The API docs ask for at least two minutes. */
+const LONG_READ_TIMEOUT_MS = 120_000;
 
 /** Wity's answers are a few kB. A body far bigger than that isn't a Wity answer, so the SDK stops reading. */
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 /**
- * Top-level fields each route accepts, from the API docs. `model` is accepted and ignored by Wity.
+ * Top-level fields each route accepts, from the API. `model` is accepted and ignored by Wity.
  * Other fields are still sent, so new API fields work without an SDK update, but the SDK logs a warning.
+ * Routes are named as in the logs: the path alone for POST, the method and path for the others.
  */
-const KNOWN_FIELDS = {
+const KNOWN_FIELDS: Record<string, Set<string>> = {
   "/v1/systemone": new Set(["state", "questions", "reasoning", "max_latency_ms", "image", "model"]),
   "/v1/generate": new Set(["state", "instructions", "shape", "max_tokens", "image", "model"]),
+  "/v1/split": new Set(["text", "split", "skill"]),
+  "/v1/extract": new Set(["text", "fields", "types", "model"]),
+  "/v1/skills": new Set(["name", "description", "question", "parts", "combine", "examples", "metadata", "split"]),
+  "PATCH /v1/skills/{skill}": new Set(["name", "description", "question", "parts", "combine", "metadata", "split"]),
+  "/v1/skills/{skill}/examples": new Set(["examples"]),
+  "/v1/sessions": new Set(["state", "skills", "metadata", "expires_in"]),
+  "PATCH /v1/sessions/{id}": new Set(["skills", "metadata", "expires_in"]),
+  "/v1/sessions/{id}/events": new Set(["events"]),
+  "/v1/sessions/{id}/decide": new Set(["questions", "reasoning", "max_latency_ms", "remember"]),
 };
-type Route = keyof typeof KNOWN_FIELDS;
+
+/** The log name of a route: the path alone for POST, the method and path for the others. */
+const routeName = (method: Call["method"], route: string): string => (method === "POST" ? route : `${method} ${route}`);
 
 export interface WityClientOptions {
   /** Defaults to the WITY_API_KEY environment variable. */
@@ -140,16 +159,6 @@ const readBody = async (response: Response): Promise<unknown> => {
   }
 };
 
-/** What `debug` logs about a request. Never the key, never the `state` text. */
-type Summary = Record<string, unknown>;
-
-/** Plain JavaScript can pass anything. Fail with a WityError before reading fields off it. */
-const checkRequest = (request: unknown): void => {
-  if (typeof request !== "object" || request === null || Array.isArray(request)) {
-    throw new WityError("The request must be an object, for example { state, questions }.");
-  }
-};
-
 /** Client for the Wity API. Use it on a server only: it holds your API key. */
 export class WityClient {
   /** The address requests go to. Useful to check which API you're calling. */
@@ -157,6 +166,10 @@ export class WityClient {
   readonly timeoutMs: number;
   readonly maxRetries: number;
   readonly logLevel: LogLevel;
+  /** Create, teach and manage skills. */
+  readonly skills: Skills;
+  /** Keep a state on Wity's side, add to it with events, and decide on it. */
+  readonly sessions: Sessions;
   // `#` fields are truly private. They never show up in console.log,
   // JSON.stringify or Object.keys, so the key can't leak through them.
   readonly #apiKey: string;
@@ -206,6 +219,10 @@ export class WityClient {
     this.#log = withLevel(options.logger ?? consoleLogger, this.logLevel);
 
     this.#fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+
+    const request: Requester = (call) => this.#request(call);
+    this.skills = new Skills(request);
+    this.sessions = new Sessions(request);
   }
 
   /**
@@ -217,15 +234,18 @@ export class WityClient {
     options: RequestOptions = {},
   ): Promise<SystemOneResponse<Q>> {
     checkRequest(request);
-    const latency = request.max_latency_ms;
-    const summary = {
-      questions: Object.keys(request.questions ?? {}),
-      reasoning: request.reasoning ?? "default",
-    };
-    return (await this.#post("/v1/systemone", request, summary, {
+    return (await this.#request({
+      method: "POST",
+      route: "/v1/systemone",
+      path: "/v1/systemone",
+      body: request,
+      summary: {
+        questions: Object.keys(request.questions ?? {}),
+        reasoning: request.reasoning ?? "default",
+      },
+      retry: "always",
+      minTimeoutMs: latencyTimeoutMs(request.max_latency_ms),
       signal: options.signal,
-      // Give Wity the full time it was allowed, plus room for the network.
-      minTimeoutMs: Number.isFinite(latency) ? (latency as number) + LATENCY_MARGIN_MS : 0,
     })) as SystemOneResponse<Q>;
   }
 
@@ -238,41 +258,109 @@ export class WityClient {
     options: RequestOptions = {},
   ): Promise<GenerateResponse<V>> {
     checkRequest(request);
-    const summary = { shape: request.shape !== undefined, max_tokens: request.max_tokens ?? "default" };
-    return (await this.#post("/v1/generate", request, summary, {
+    return (await this.#request({
+      method: "POST",
+      route: "/v1/generate",
+      path: "/v1/generate",
+      body: request,
+      summary: { shape: request.shape !== undefined, max_tokens: request.max_tokens ?? "default" },
+      retry: "always",
       signal: options.signal,
-      minTimeoutMs: 0,
     })) as GenerateResponse<V>;
   }
 
-  async #post(
-    route: Route,
-    request: object,
-    summary: Summary,
-    { signal, minTimeoutMs }: { signal: AbortSignal | undefined; minTimeoutMs: number },
-  ): Promise<unknown> {
-    const body = Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined));
-
-    // Unknown fields are sent, so new API fields work without an SDK update.
-    // They're never dropped silently: a warning names them, and so does a 400 error.
-    // Line breaks and other control characters in a name become "?", so a name can't fake a new log line.
-    const unknown = Object.keys(body)
-      .filter((field) => !KNOWN_FIELDS[route].has(field))
-      .map((field) => field.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "?"));
-    const unknownNote =
-      unknown.length > 0 ? `The request included fields Wity may not know: ${unknown.join(", ")}.` : undefined;
-    if (unknownNote) this.#log.warn(`${route}: ${unknownNote} Check for typos.`);
-
-    const url = `${this.baseURL}${route}`;
-    let payload: string;
-    try {
-      payload = JSON.stringify(body);
-    } catch (err) {
-      throw new WityError("The request can't be turned into JSON. Look for BigInt values or loops in state.", {
-        cause: err,
-      });
+  /**
+   * Cut `text` into whole items: emails, clauses, messages, entries.
+   * Every item is an exact slice: `text.slice(item.start, item.end) === item.text`.
+   * Give `split` (what one item is) or `skill` (a split skill), not both.
+   */
+  async split(request: SplitRequest, options: RequestOptions = {}): Promise<SplitResponse> {
+    checkRequest(request, "{ text, split }");
+    if (request.split !== undefined && request.skill !== undefined) {
+      throw new WityError("Give split or skill, not both. A split skill brings its own split.");
     }
-    const timeoutMs = Math.min(Math.max(this.timeoutMs, minTimeoutMs), MAX_TIMER_MS);
+    return (await this.#request({
+      method: "POST",
+      route: "/v1/split",
+      path: "/v1/split",
+      body: request,
+      summary: {
+        chars: typeof request.text === "string" ? request.text.length : undefined,
+        split:
+          request.skill !== undefined
+            ? "skill"
+            : request.split === undefined
+              ? "default"
+              : typeof request.split === "object"
+                ? "spec"
+                : "words",
+      },
+      retry: "always",
+      minTimeoutMs: LONG_READ_TIMEOUT_MS,
+      signal: options.signal,
+    })) as SplitResponse;
+  }
+
+  /**
+   * Pull named fields out of `text`. Each value comes back as written, with its position and a confidence.
+   * `fields` maps each field name to what it asks for, in plain words.
+   */
+  async extract<const F extends Record<string, string>>(
+    request: ExtractRequest<F>,
+    options: RequestOptions = {},
+  ): Promise<ExtractResponse<keyof F & string>> {
+    checkRequest(request, "{ text, fields }");
+    return (await this.#request({
+      method: "POST",
+      route: "/v1/extract",
+      path: "/v1/extract",
+      body: request,
+      summary: {
+        chars: typeof request.text === "string" ? request.text.length : undefined,
+        fields: Object.keys(request.fields ?? {}),
+      },
+      retry: "always",
+      minTimeoutMs: LONG_READ_TIMEOUT_MS,
+      signal: options.signal,
+    })) as ExtractResponse<keyof F & string>;
+  }
+
+  async #request(call: Call): Promise<unknown> {
+    const route = routeName(call.method, call.route);
+    const { signal, summary } = call;
+    let payload: string | undefined;
+    let unknownNote: string | undefined;
+    if (call.body !== undefined) {
+      const body = Object.fromEntries(Object.entries(call.body).filter(([, value]) => value !== undefined));
+
+      // Unknown fields are sent, so new API fields work without an SDK update.
+      // They're never dropped silently: a warning names them, and so does a 400 error.
+      // Line breaks and other control characters in a name become "?", so a name can't fake a new log line.
+      const known = KNOWN_FIELDS[route];
+      const unknown = known
+        ? Object.keys(body)
+            .filter((field) => !known.has(field))
+            .map((field) => field.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "?"))
+        : [];
+      unknownNote =
+        unknown.length > 0 ? `The request included fields Wity may not know: ${unknown.join(", ")}.` : undefined;
+      if (unknownNote) this.#log.warn(`${route}: ${unknownNote} Check for typos.`);
+
+      try {
+        payload = JSON.stringify(body);
+      } catch (err) {
+        throw new WityError("The request can't be turned into JSON. Look for BigInt values or loops in state.", {
+          cause: err,
+        });
+      }
+    }
+
+    const query = new URLSearchParams();
+    for (const [name, value] of Object.entries(call.query ?? {})) {
+      if (value !== undefined) query.set(name, String(value));
+    }
+    const url = `${this.baseURL}${call.path}${query.size > 0 ? `?${query}` : ""}`;
+    const timeoutMs = Math.min(Math.max(this.timeoutMs, call.minTimeoutMs ?? 0), MAX_TIMER_MS);
     const attempts = this.maxRetries + 1;
 
     for (let attempt = 0; ; attempt++) {
@@ -280,7 +368,7 @@ export class WityClient {
       const retryLabel = `retry ${attempt + 1} of ${this.maxRetries}`;
       this.#log.debug(`${route}: sending (attempt ${attempt + 1} of ${attempts})`, {
         url,
-        bytes: new TextEncoder().encode(payload).length,
+        ...(payload !== undefined && { bytes: new TextEncoder().encode(payload).length }),
         ...summary,
       });
       const started = Date.now();
@@ -288,14 +376,17 @@ export class WityClient {
       let response: Response;
       let data: unknown;
       try {
-        ({ response, data } = await this.#send(url, payload, timeoutMs, signal));
+        ({ response, data } = await this.#send(call.method, url, payload, timeoutMs, signal));
       } catch (err) {
         const ms = Date.now() - started;
         if (err instanceof APIConnectionError && canRetry) {
-          const delay = Math.round(backoffMs(attempt));
-          this.#log.info(`${route}: connection failed after ${ms} ms. Retrying in ${delay} ms (${retryLabel}).`, err.cause);
-          await this.#wait(delay, signal);
-          continue;
+          if (call.retry === "always") {
+            const delay = Math.round(backoffMs(attempt));
+            this.#log.info(`${route}: connection failed after ${ms} ms. Retrying in ${delay} ms (${retryLabel}).`, err.cause);
+            await this.#wait(delay, signal);
+            continue;
+          }
+          this.#log.info(`${route}: not retrying. This call adds something, and it may have gone through.`);
         }
         this.#log.info(`${route}: ${(err as Error).message} (after ${ms} ms)`);
         throw err;
@@ -311,7 +402,14 @@ export class WityClient {
         return data;
       }
 
-      if (canRetry && shouldRetryStatus(response.status)) {
+      // 429 and 503 mean Wity did no work, so even a call that adds something can go again.
+      const safeToRetry = call.retry === "always" || response.status === 429 || response.status === 503;
+      if (canRetry && shouldRetryStatus(response.status) && !safeToRetry) {
+        this.#log.info(`${route}: got ${response.status}. Not retrying: this call adds something, and it may have gone through.`, {
+          requestId,
+        });
+      }
+      if (canRetry && shouldRetryStatus(response.status) && safeToRetry) {
         const delay = delayBeforeRetry(attempt, response.headers);
         if (delay !== undefined) {
           this.#log.info(`${route}: got ${response.status}. Retrying in ${Math.round(delay)} ms (${retryLabel}).`, {
@@ -334,8 +432,9 @@ export class WityClient {
    * answer still ends in a WityError.
    */
   async #send(
+    method: Call["method"],
     url: string,
-    payload: string,
+    payload: string | undefined,
     timeoutMs: number,
     signal: AbortSignal | undefined,
   ): Promise<{ response: Response; data: unknown }> {
@@ -352,10 +451,10 @@ export class WityClient {
 
     try {
       const response = await this.#fetch(url, {
-        method: "POST",
+        method,
         headers: {
           Authorization: `Bearer ${this.#apiKey}`,
-          "Content-Type": "application/json",
+          ...(payload !== undefined && { "Content-Type": "application/json" }),
           Accept: "application/json",
         },
         body: payload,

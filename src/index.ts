@@ -8,11 +8,16 @@ export {
   APIUserAbortError,
   AuthenticationError,
   BadRequestError,
+  ConflictError,
   InsufficientBalanceError,
   InternalServerError,
+  NotFoundError,
   RateLimitError,
   WityError,
 } from "./errors";
 export { LOG_LEVELS, type LogLevel, type Logger } from "./logging";
-export { choice, noul, score } from "./questions";
+export { choice, noul, score, skill } from "./questions";
+export type { ListOptions } from "./request";
+export type { Sessions } from "./sessions";
+export type { SkillExamples, Skills } from "./skills";
 export type * from "./types";

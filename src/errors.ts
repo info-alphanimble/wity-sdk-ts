@@ -11,12 +11,16 @@ export class WityError extends Error {
 
 const MOVED_HINT = "The API address may have changed. Set WITY_BASE_URL to the new address, or update the wity package.";
 
+/** Wity's own "no such skill, session or example" answer, as opposed to an address that doesn't exist. */
+const isMissingThing = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && (body as Record<string, unknown>).code === "not_found";
+
 /** Extra advice added to the message for some statuses. */
-const hintFor = (status: number): string | undefined => {
+const hintFor = (status: number, body: unknown): string | undefined => {
   if (status >= 300 && status < 400) return `The API answered with a redirect, which this SDK never follows. ${MOVED_HINT}`;
   if (status === 401) return "Check WITY_API_KEY.";
   if (status === 402) return "The account has no balance left.";
-  if (status === 404) return MOVED_HINT;
+  if (status === 404 && !isMissingThing(body)) return MOVED_HINT;
   return undefined;
 };
 
@@ -78,7 +82,7 @@ export class APIError extends WityError {
     // For example: "401 invalid API key. Check WITY_API_KEY."
     const detail = messageFrom(body)?.replace(/\.+$/, "");
     const head = detail ? `${status} ${detail}` : String(status);
-    const extra = [hintFor(status), note].filter(Boolean).join(" ");
+    const extra = [hintFor(status, body), note].filter(Boolean).join(" ");
     super(extra ? `${head}. ${extra}` : head);
     this.status = status;
     this.body = body;
@@ -91,6 +95,8 @@ export class APIError extends WityError {
     if (status === 400) return new BadRequestError(status, body, headers, note);
     if (status === 401) return new AuthenticationError(status, body, headers, note);
     if (status === 402) return new InsufficientBalanceError(status, body, headers, note);
+    if (status === 404) return new NotFoundError(status, body, headers, note);
+    if (status === 409) return new ConflictError(status, body, headers, note);
     if (status === 429) return new RateLimitError(status, body, headers, note);
     if (status >= 500) return new InternalServerError(status, body, headers, note);
     return new APIError(status, body, headers, note);
@@ -108,6 +114,14 @@ export class AuthenticationError extends APIError {
 /** 402: the account has no balance left. */
 export class InsufficientBalanceError extends APIError {
   override name = "InsufficientBalanceError";
+}
+/** 404: no skill, session or example by that id or name. Or the API address is wrong: the message says which. */
+export class NotFoundError extends APIError {
+  override name = "NotFoundError";
+}
+/** 409: a skill with that name already exists. */
+export class ConflictError extends APIError {
+  override name = "ConflictError";
 }
 /** 429: too many requests. Thrown after the SDK's retries run out. */
 export class RateLimitError extends APIError {

@@ -2,7 +2,7 @@
 // They exist so TypeScript remembers your option ids and types the answers with them.
 // The API checks the limits (option counts, lengths) and explains any problem in its error.
 
-import type { ChoiceQuestion, NoulQuestion, ScoreQuestion } from "./types";
+import type { ChoiceQuestion, NoulQuestion, ScoreQuestion, SkillQuestion } from "./types";
 
 /**
  * Pick one option.
@@ -36,3 +36,10 @@ export const score = (instructions: string, criteria: readonly string[]): ScoreQ
   instructions,
   criteria,
 });
+
+/**
+ * Ask a saved skill's question, by its id or name. The answer adds `skill`: which version answered, and how.
+ *
+ * @example skill("urgent-ticket")
+ */
+export const skill = (name: string): SkillQuestion => ({ skill: name });

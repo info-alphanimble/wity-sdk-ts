@@ -2,7 +2,17 @@
 // At runtime they only check the builders' output.
 
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { type SystemOneResponse, choice, noul, score } from "../src/index";
+import {
+  type ExtractResponse,
+  type Skill,
+  type SplitRequest,
+  type SystemOneResponse,
+  WityClient,
+  choice,
+  noul,
+  score,
+  skill,
+} from "../src/index";
 
 const team = choice("Which team?", { billing: "Payments", technical: "Bugs" });
 const urgent = noul("Is it urgent?");
@@ -60,5 +70,33 @@ describe("types", () => {
   it("score levels can come from a variable, like a list loaded from a database", () => {
     const levels: string[] = ["Low", "Medium", "High"];
     expect(score("How bad?", levels).criteria).toEqual(levels);
+  });
+
+  it("a skill question gets a noul or choice answer with skill info", () => {
+    expect(skill("urgent-ticket")).toEqual({ skill: "urgent-ticket" });
+    type WithSkill = SystemOneResponse<{ urgent: ReturnType<typeof skill> }>["answers"];
+    expectTypeOf<WithSkill["urgent"]["type"]>().toEqualTypeOf<"noul" | "choice">();
+    expectTypeOf<WithSkill["urgent"]["skill"]>().toEqualTypeOf<
+      { id: string; name: string; version: number; answered_by: "question" | "rule" | "parts" | "examples"; active: boolean } | undefined
+    >();
+  });
+
+  it("split takes split or skill, not both", () => {
+    expectTypeOf<{ text: string; split: string }>().toMatchTypeOf<SplitRequest>();
+    expectTypeOf<{ text: string; skill: string }>().toMatchTypeOf<SplitRequest>();
+    expectTypeOf<{ text: string; split: string; skill: string }>().not.toMatchTypeOf<SplitRequest>();
+  });
+
+  it("extract keys its answer by the field names", () => {
+    const client = null as unknown as WityClient;
+    const call = () => client.extract({ text: "…", fields: { party: "who signs", total: "the amount" } });
+    expectTypeOf<Awaited<ReturnType<typeof call>>>().toEqualTypeOf<ExtractResponse<"party" | "total">>();
+    // @ts-expect-error: types only names fields that were asked for
+    const _bad = () => client.extract({ text: "…", fields: { total: "the amount" }, types: { nope: "date" } });
+  });
+
+  it("a skill is told apart by kind", () => {
+    const describe = (s: Skill) => (s.kind === "split" ? s.split : s.question.instructions);
+    expectTypeOf(describe).returns.toEqualTypeOf<string | { unit: string; starts_at?: string[]; keep_together?: string[]; never_split?: string[] }>();
   });
 });
