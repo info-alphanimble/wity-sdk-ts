@@ -11,6 +11,8 @@ import { backoffMs, delayBeforeRetry, shouldRetryStatus, sleep } from "./retry";
 import { type Call, checkRequest, latencyTimeoutMs, type Requester } from "./request";
 import { Sessions } from "./sessions";
 import { Skills } from "./skills";
+import { showUpdateNoticeOnce } from "./update-notice";
+import { VERSION } from "./version";
 import type {
   ExtractRequest,
   ExtractResponse,
@@ -197,6 +199,7 @@ export class WityClient {
       throw new WityError("The API key contains spaces or unusual characters. Check WITY_API_KEY.");
     }
     this.#apiKey = apiKey;
+    showUpdateNoticeOnce("wity-sdk", VERSION, "npm install wity-sdk@latest");
 
     this.baseURL = checkBaseURL(options.baseURL ?? readEnv("WITY_BASE_URL") ?? DEFAULT_BASE_URL);
 

@@ -21,3 +21,4 @@ export type { ListOptions } from "./request";
 export type { Sessions } from "./sessions";
 export type { SkillExamples, Skills } from "./skills";
 export type * from "./types";
+export { VERSION } from "./version";

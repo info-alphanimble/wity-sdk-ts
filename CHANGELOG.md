@@ -2,6 +2,13 @@
 
 All notable changes to `wity-sdk` (TypeScript). Versions follow [semver](https://semver.org). Before 1.0, a minor version can add features.
 
+## 0.2.1 (2026-10-26)
+
+### Added
+
+- **Update notice.** On Node at a terminal, a client tells you on stderr when a newer `wity-sdk` is on npm, at most once a day. The check runs at most once a day in the background and never keeps your program running. It stays quiet in CI, when output is piped, on servers, and outside Node. `WITY_NO_UPDATE_CHECK=1` turns it off.
+- `VERSION`, this package's version.
+
 ## 0.2.0 (2026-10-22)
 
 Split documents, extract fields, and teach Wity with skills and sessions.
